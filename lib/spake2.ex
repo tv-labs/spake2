@@ -113,15 +113,19 @@ defmodule Spake2 do
     end
   end
 
-  # Password scalar: SHA-512 reduced mod l, then bottom 3 bits cleared.
-  # The bit-clearing is a BoringSSL compat hack — adds multiples of l
-  # so the scalar is divisible by the cofactor 8.
+  # Password scalar: SHA-512 reduced mod l, then bottom 3 bits cleared by
+  # adding multiples of l. This matches BoringSSL's "password_scalar_hack"
+  # (commit 696c13b) which adds kOrder to flip bits rather than masking.
+  #
+  # We CANNOT use `band(bnot(7))` because M and N are not in the prime-order
+  # subgroup, so `k*l * M ≠ identity`. The scalar_mult does not reduce mod l,
+  # so the actual numeric value of the scalar matters, not just its residue.
   defp password_scalar(password_hash) do
     scalar = Ed25519.sc_reduce(password_hash)
     l = Ed25519.l()
-    scalar = if (scalar &&& 1) == 1, do: scalar + l, else: scalar
-    scalar = if (scalar &&& 2) == 2, do: scalar + 2 * l, else: scalar
-    if (scalar &&& 4) == 4, do: scalar + 4 * l, else: scalar
+    scalar = if band(scalar, 1) == 1, do: scalar + l, else: scalar
+    scalar = if band(scalar, 2) == 2, do: scalar + 2 * l, else: scalar
+    if band(scalar, 4) == 4, do: scalar + 4 * l, else: scalar
   end
 
   defp reject_low_order(point) do

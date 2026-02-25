@@ -79,9 +79,9 @@ defmodule Spake2.Ed25519 do
   """
   @spec scalar_mult(integer(), point()) :: point()
   def scalar_mult(scalar, point) do
-    scalar = mod(scalar, @l)
-
-    # Montgomery ladder: fixed 255 iterations (bit length of l)
+    # Montgomery ladder: fixed 256 iterations (bits 255..0).
+    # Do NOT reduce mod l here — M and N are not in the prime-order subgroup,
+    # so (s + k*l) * M ≠ s * M. BoringSSL's scalar_mult also does not reduce.
     255..0//-1
     |> Enum.reduce({@identity, point}, fn i, {r0, r1} ->
       bit = scalar |> bsr(i) |> band(1)
