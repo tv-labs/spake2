@@ -1,5 +1,14 @@
 # Spake2
 
+[![Hex.pm Version](http://img.shields.io/hexpm/v/spake2.svg)](https://hex.pm/packages/spake2)
+[![Hex docs](http://img.shields.io/badge/hex.pm-docs-blue.svg?style=flat)](https://hexdocs.pm/spake2)
+[![License: Apache](https://img.shields.io/badge/License-Apache-yellow.svg)](./LICENSE.md)
+
+You're currently looking at the main branch. [Check out the docs for the latest
+published version.](https://hexdocs.pm/spake2)
+
+---
+
 <!-- MDOC -->
 
 SPAKE2 password-authenticated key exchange over Ed25519, compatible with
