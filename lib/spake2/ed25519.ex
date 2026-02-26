@@ -3,7 +3,9 @@ defmodule Spake2.Ed25519 do
   Ed25519 twisted Edwards curve point arithmetic for SPAKE2.
 
   Provides point addition, scalar multiplication, and encoding/decoding
-  on the Ed25519 curve (-x^2 + y^2 = 1 + d*x^2*y^2 over GF(2^255-19)).
+  on the Ed25519 curve
+
+  $$-x^2 + y^2 = 1 + dx^2y^2 \\text{ over } GF(2^{255}-19)$$
 
   Based on the approach from the `ed25519` hex package, with operations
   made public for use in the SPAKE2 protocol.
