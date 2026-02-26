@@ -1,5 +1,5 @@
 defmodule Spake2 do
-  @external_resource Path.join([__DIR__, "..", "README.md"])
+  @external_resource "README.md"
 
   @moduledoc @external_resource
              |> File.read!()

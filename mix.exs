@@ -79,9 +79,7 @@ defmodule Spake2.MixProject do
   defp docs do
     [
       main: "Spake2",
-      extras: [
-        "CHANGELOG.md": [title: "Changelog"]
-      ],
+      extras: ["CHANGELOG.md"],
       source_url: "https://github.com/tv-labs/spake2",
       before_closing_body_tag: %{html: @mermaid_js},
       source_ref: "v#{@version}"
