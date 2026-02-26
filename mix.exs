@@ -11,7 +11,8 @@ defmodule Spake2.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       name: "Spake2",
-      description: "SPAKE2 password-authenticated key exchange over Ed25519 (BoringSSL-compatible)",
+      description:
+        "SPAKE2 password-authenticated key exchange over Ed25519 (BoringSSL-compatible)",
       source_url: @source_url,
       homepage_url: @source_url,
       package: package(),
@@ -61,7 +62,6 @@ defmodule Spake2.MixProject do
     });
   </script>
   """
-
 
   defp docs do
     [

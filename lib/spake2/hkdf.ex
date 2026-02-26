@@ -56,7 +56,8 @@ defmodule Spake2.HKDF do
     hash_len = hash_length(hash)
     n = ceil(length / hash_len)
 
-    if n > 255, do: raise(ArgumentError, "HKDF expand: requested length too large (max #{255 * hash_len})")
+    if n > 255,
+      do: raise(ArgumentError, "HKDF expand: requested length too large (max #{255 * hash_len})")
 
     1..n
     |> Enum.reduce({<<>>, <<>>}, fn i, {prev_t, acc} ->

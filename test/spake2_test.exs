@@ -124,11 +124,11 @@ defmodule Spake2Test do
       assert byte_size(alice_msg) == 32
       assert byte_size(bob_msg) == 32
 
-      {:ok, alice_key} = Spake2.process_msg(alice, bob_msg)
-      {:ok, bob_key} = Spake2.process_msg(bob, alice_msg)
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+      {:ok, bob} = Spake2.process_msg(bob, alice_msg)
 
-      assert alice_key == bob_key
-      assert byte_size(alice_key) == 64
+      assert alice.session_key == bob.session_key
+      assert byte_size(alice.session_key) == 32
     end
 
     test "different passwords produce different keys" do
@@ -138,10 +138,10 @@ defmodule Spake2Test do
       {alice, alice_msg} = Spake2.generate_msg(alice, "123456")
       {bob, bob_msg} = Spake2.generate_msg(bob, "654321")
 
-      {:ok, alice_key} = Spake2.process_msg(alice, bob_msg)
-      {:ok, bob_key} = Spake2.process_msg(bob, alice_msg)
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+      {:ok, bob} = Spake2.process_msg(bob, alice_msg)
 
-      assert alice_key != bob_key
+      assert alice.session_key != bob.session_key
     end
 
     test "different names produce different keys" do
@@ -154,10 +154,10 @@ defmodule Spake2Test do
       {alice, alice_msg} = Spake2.generate_msg(alice, password, entropy: entropy)
       {bob, bob_msg} = Spake2.generate_msg(bob, password, entropy: entropy)
 
-      {:ok, alice_key} = Spake2.process_msg(alice, bob_msg)
-      {:ok, bob_key} = Spake2.process_msg(bob, alice_msg)
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+      {:ok, bob} = Spake2.process_msg(bob, alice_msg)
 
-      assert alice_key != bob_key
+      assert alice.session_key != bob.session_key
     end
 
     test "empty names work" do
@@ -169,10 +169,10 @@ defmodule Spake2Test do
       {alice, alice_msg} = Spake2.generate_msg(alice, password)
       {bob, bob_msg} = Spake2.generate_msg(bob, password)
 
-      {:ok, alice_key} = Spake2.process_msg(alice, bob_msg)
-      {:ok, bob_key} = Spake2.process_msg(bob, alice_msg)
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+      {:ok, bob} = Spake2.process_msg(bob, alice_msg)
 
-      assert alice_key == bob_key
+      assert alice.session_key == bob.session_key
     end
 
     test "deterministic entropy produces repeatable results" do
@@ -200,10 +200,21 @@ defmodule Spake2Test do
       corrupted = <<Bitwise.bxor(first_byte, 1), rest::binary>>
 
       case Spake2.process_msg(alice, corrupted) do
-        {:error, _} -> :ok
-        {:ok, key} ->
-          {:ok, good_key} = Spake2.process_msg(alice, bob_msg)
-          assert key != good_key
+        {:error, _} ->
+          :ok
+
+        {:ok, alice_corrupted} ->
+          {:ok, alice_good} =
+            Spake2.process_msg(
+              Spake2.new(:alice, "alice", "bob")
+              |> then(fn ctx ->
+                {ctx, _} = Spake2.generate_msg(ctx, password)
+                ctx
+              end),
+              bob_msg
+            )
+
+          assert alice_corrupted.session_key != alice_good.session_key
       end
     end
   end
@@ -254,6 +265,159 @@ defmodule Spake2Test do
     end
   end
 
+  describe "state machine" do
+    test "new/3 initializes state to :init" do
+      ctx = Spake2.new(:alice, "alice", "bob")
+      assert ctx.state == :init
+    end
+
+    test "generate_msg/3 transitions state to :msg_generated" do
+      ctx = Spake2.new(:alice)
+      {ctx, _msg} = Spake2.generate_msg(ctx, "password")
+      assert ctx.state == :msg_generated
+    end
+
+    test "generate_msg/3 returns error on double call" do
+      ctx = Spake2.new(:alice)
+      {ctx, _msg} = Spake2.generate_msg(ctx, "password")
+
+      assert {:error, {:invalid_state, :msg_generated}} = Spake2.generate_msg(ctx, "password")
+    end
+
+    test "process_msg/2 returns error on state :init (skipped generate_msg)" do
+      ctx = Spake2.new(:alice)
+
+      assert {:error, {:invalid_state, :init}} =
+               Spake2.process_msg(ctx, :crypto.strong_rand_bytes(32))
+    end
+
+    test "process_msg/2 transitions state to :key_derived" do
+      password = "test"
+      alice = Spake2.new(:alice)
+      bob = Spake2.new(:bob)
+
+      {alice, _alice_msg} = Spake2.generate_msg(alice, password)
+      {_bob, bob_msg} = Spake2.generate_msg(bob, password)
+
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+      assert alice.state == :key_derived
+    end
+
+    test "process_msg/2 returns error on double call" do
+      password = "test"
+      alice = Spake2.new(:alice)
+      bob = Spake2.new(:bob)
+
+      {alice, _alice_msg} = Spake2.generate_msg(alice, password)
+      {_bob, bob_msg} = Spake2.generate_msg(bob, password)
+
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+
+      assert {:error, {:invalid_state, :key_derived}} = Spake2.process_msg(alice, bob_msg)
+    end
+  end
+
+  describe "key confirmation" do
+    test "matching passwords produce verifiable confirmations" do
+      password = "123456"
+
+      alice = Spake2.new(:alice, "alice", "bob")
+      bob = Spake2.new(:bob, "bob", "alice")
+
+      {alice, alice_msg} = Spake2.generate_msg(alice, password)
+      {bob, bob_msg} = Spake2.generate_msg(bob, password)
+
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+      {:ok, bob} = Spake2.process_msg(bob, alice_msg)
+
+      # Each side verifies the other's confirmation token
+      assert {:ok, alice} = Spake2.verify_confirmation(alice, bob.my_confirmation)
+      assert {:ok, bob} = Spake2.verify_confirmation(bob, alice.my_confirmation)
+
+      assert alice.state == :confirmed
+      assert bob.state == :confirmed
+    end
+
+    test "different passwords fail key confirmation" do
+      alice = Spake2.new(:alice, "alice", "bob")
+      bob = Spake2.new(:bob, "bob", "alice")
+
+      {alice, alice_msg} = Spake2.generate_msg(alice, "123456")
+      {bob, bob_msg} = Spake2.generate_msg(bob, "654321")
+
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+      {:ok, bob} = Spake2.process_msg(bob, alice_msg)
+
+      assert {:error, :confirmation_mismatch} =
+               Spake2.verify_confirmation(alice, bob.my_confirmation)
+
+      assert {:error, :confirmation_mismatch} =
+               Spake2.verify_confirmation(bob, alice.my_confirmation)
+    end
+
+    test "confirmation tokens are 32 bytes" do
+      password = "test"
+      alice = Spake2.new(:alice)
+      bob = Spake2.new(:bob)
+
+      {alice, _alice_msg} = Spake2.generate_msg(alice, password)
+      {_bob, bob_msg} = Spake2.generate_msg(bob, password)
+
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+
+      assert byte_size(alice.my_confirmation) == 32
+    end
+
+    test "session key is 32 bytes" do
+      password = "test"
+      alice = Spake2.new(:alice)
+      bob = Spake2.new(:bob)
+
+      {alice, _alice_msg} = Spake2.generate_msg(alice, password)
+      {_bob, bob_msg} = Spake2.generate_msg(bob, password)
+
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+
+      assert byte_size(alice.session_key) == 32
+    end
+
+    test "verify_confirmation returns error on wrong state" do
+      ctx = Spake2.new(:alice)
+
+      assert {:error, {:invalid_state, :init}} = Spake2.verify_confirmation(ctx, <<0::256>>)
+    end
+
+    test "Alice and Bob produce different confirmation tokens" do
+      password = "test"
+      alice = Spake2.new(:alice, "alice", "bob")
+      bob = Spake2.new(:bob, "bob", "alice")
+
+      {alice, alice_msg} = Spake2.generate_msg(alice, password)
+      {bob, bob_msg} = Spake2.generate_msg(bob, password)
+
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+      {:ok, bob} = Spake2.process_msg(bob, alice_msg)
+
+      # Alice's token != Bob's token (prevents reflection attacks)
+      assert alice.my_confirmation != bob.my_confirmation
+    end
+  end
+
+  describe "genpoint/2" do
+    test "raises when max_iterations exceeded" do
+      # A seed that won't produce a valid point in 1 iteration
+      # Use a fixed hash that we know fails decoding
+      assert_raise FunctionClauseError, fn ->
+        Spake2.genpoint("test seed", 0)
+      end
+    end
+
+    test "existing M/N generation works with default limit" do
+      m_point = Spake2.genpoint("edwards25519 point generation seed (M)")
+      assert Ed25519.on_curve?(m_point)
+    end
+  end
+
   describe "SPAKE2 property tests" do
     property "matching passwords always produce matching keys" do
       check all(
@@ -267,11 +431,15 @@ defmodule Spake2Test do
         {alice, alice_msg} = Spake2.generate_msg(alice, password)
         {bob, bob_msg} = Spake2.generate_msg(bob, password)
 
-        {:ok, alice_key} = Spake2.process_msg(alice, bob_msg)
-        {:ok, bob_key} = Spake2.process_msg(bob, alice_msg)
+        {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+        {:ok, bob} = Spake2.process_msg(bob, alice_msg)
 
-        assert alice_key == bob_key
-        assert byte_size(alice_key) == 64
+        assert alice.session_key == bob.session_key
+        assert byte_size(alice.session_key) == 32
+
+        # Key confirmation also succeeds
+        assert {:ok, _} = Spake2.verify_confirmation(alice, bob.my_confirmation)
+        assert {:ok, _} = Spake2.verify_confirmation(bob, alice.my_confirmation)
       end
     end
 
