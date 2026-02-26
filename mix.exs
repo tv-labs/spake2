@@ -27,8 +27,7 @@ defmodule Spake2.MixProject do
       licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => @source_url
-      },
-      files: ~w[lib mix.exs LICENSE CHANGELOG.md]
+      }
     ]
   end
 
