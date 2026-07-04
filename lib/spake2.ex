@@ -18,6 +18,9 @@ defmodule Spake2 do
 
   @type role :: :alice | :bob
 
+  # Redact key material and password-derived values from inspect output so
+  # they do not leak through logs, crash reports, or GenServer state dumps.
+  @derive {Inspect, only: [:role, :my_name, :their_name, :my_msg, :state]}
   defstruct [
     :role,
     :my_name,
@@ -125,8 +128,13 @@ defmodule Spake2 do
 
   Use `verify_confirmation/2` with the peer's confirmation token to complete the
   handshake. Until confirmation succeeds, the session key should not be trusted.
+
+  On success, the ephemeral private key and password-derived values
+  (`private_key`, `password_hash`, `pw_scalar`) are cleared from the returned
+  context — they are no longer needed once the keys are derived.
   """
-  @spec process_msg(t(), binary()) :: {:ok, t()} | {:error, Exception.t()}
+  @spec process_msg(t(), binary()) ::
+          {:ok, t()} | {:error, Exception.t() | {:invalid_state, state()}}
   def process_msg(%__MODULE__{state: :msg_generated} = ctx, their_msg)
       when byte_size(their_msg) == 32 do
     with {:ok, their_blinded} <- Ed25519.decode(their_msg),
@@ -146,6 +154,10 @@ defmodule Spake2 do
     end
   end
 
+  def process_msg(%__MODULE__{state: :msg_generated}, _their_msg) do
+    {:error, Ed25519.DecodeError.exception(:invalid_encoding)}
+  end
+
   def process_msg(%__MODULE__{state: state}, _their_msg) do
     {:error, {:invalid_state, state}}
   end
@@ -158,13 +170,18 @@ defmodule Spake2 do
   expected value, proving they derived the same key.
 
   Returns `{:ok, updated_ctx}` (state `:confirmed`) or `{:error, :confirmation_mismatch}`.
-  Uses constant-time comparison to prevent timing attacks.
+  Uses constant-time comparison to prevent timing attacks. A token of the
+  wrong length fails cleanly with `:confirmation_mismatch` rather than raising.
   """
   @spec verify_confirmation(t(), binary()) ::
           {:ok, t()} | {:error, :confirmation_mismatch | {:invalid_state, state()}}
   def verify_confirmation(%__MODULE__{state: :key_derived} = ctx, their_token)
       when is_binary(their_token) do
-    if :crypto.hash_equals(ctx.their_confirmation, their_token) do
+    # :crypto.hash_equals/2 raises when lengths differ, so guard the length
+    # first. Length is public information; only the contents need a
+    # constant-time comparison.
+    if byte_size(their_token) == byte_size(ctx.their_confirmation) and
+         :crypto.hash_equals(ctx.their_confirmation, their_token) do
       {:ok, %{ctx | state: :confirmed}}
     else
       {:error, :confirmation_mismatch}
@@ -216,9 +233,16 @@ defmodule Spake2 do
         :bob -> {bob_confirmation, alice_confirmation}
       end
 
+    # Scrub inputs that are no longer needed once the keys are derived, so a
+    # long-lived context (e.g. in GenServer state, crash dumps, or error
+    # reports) does not retain password-derived material or the ephemeral
+    # private key any longer than necessary.
     %{
       ctx
-      | transcript_key: raw_key,
+      | private_key: nil,
+        password_hash: nil,
+        pw_scalar: nil,
+        transcript_key: raw_key,
         session_key: session_key,
         my_confirmation: my_confirmation,
         their_confirmation: their_confirmation,
