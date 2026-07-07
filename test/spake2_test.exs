@@ -2,6 +2,8 @@ defmodule Spake2Test do
   use ExUnit.Case
   use ExUnitProperties
 
+  import Bitwise
+
   alias Spake2.Ed25519
 
   describe "Ed25519 point operations" do
@@ -45,6 +47,33 @@ defmodule Spake2Test do
       assert_raise Ed25519.DecodeError, fn ->
         Ed25519.decode!(<<0xFF>>)
       end
+    end
+
+    test "non-canonical y (y + p) decodes to the same point as canonical y (BoringSSL fe_frombytes)" do
+      # The identity {0, 1} encoded with y = 1 + p instead of y = 1.
+      # Only y values <= 18 can be encoded non-canonically within 255 bits.
+      identity = Ed25519.identity()
+      non_canonical = <<1 + Ed25519.p()::little-size(256)>>
+
+      assert non_canonical != Ed25519.encode(identity)
+      assert {:ok, ^identity} = Ed25519.decode(non_canonical)
+    end
+
+    test "x = 0 with sign bit set decodes with a reduced x coordinate (fe_neg(0) == 0)" do
+      # y = 1 (the identity point's y) with the sign bit set
+      encoded = <<bor(1, 1 <<< 255)::little-size(256)>>
+
+      assert {:ok, {0, 1}} = Ed25519.decode(encoded)
+    end
+
+    test "decoded coordinates are always fully reduced" do
+      # y = p encodes the point {sqrt(-1), 0} with a non-canonical zero
+      non_canonical_zero = <<Ed25519.p()::little-size(256)>>
+
+      assert {:ok, {x, y}} = Ed25519.decode(non_canonical_zero)
+      assert x >= 0 and x < Ed25519.p()
+      assert y == 0
+      assert Ed25519.on_curve?({x, y})
     end
   end
 
@@ -197,7 +226,7 @@ defmodule Spake2Test do
       {_bob, bob_msg} = Spake2.generate_msg(bob, password)
 
       <<first_byte, rest::binary>> = bob_msg
-      corrupted = <<Bitwise.bxor(first_byte, 1), rest::binary>>
+      corrupted = <<bxor(first_byte, 1), rest::binary>>
 
       case Spake2.process_msg(alice, corrupted) do
         {:error, _} ->
@@ -387,6 +416,23 @@ defmodule Spake2Test do
       assert {:error, {:invalid_state, :init}} = Spake2.verify_confirmation(ctx, <<0::256>>)
     end
 
+    test "wrong-length confirmation token fails cleanly instead of raising" do
+      password = "test"
+      alice = Spake2.new(:alice)
+      bob = Spake2.new(:bob)
+
+      {alice, _alice_msg} = Spake2.generate_msg(alice, password)
+      {_bob, bob_msg} = Spake2.generate_msg(bob, password)
+
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+
+      # :crypto.hash_equals/2 raises on length mismatch; an attacker-supplied
+      # short or long token must not crash the caller
+      assert {:error, :confirmation_mismatch} = Spake2.verify_confirmation(alice, <<>>)
+      assert {:error, :confirmation_mismatch} = Spake2.verify_confirmation(alice, <<0::248>>)
+      assert {:error, :confirmation_mismatch} = Spake2.verify_confirmation(alice, <<0::264>>)
+    end
+
     test "Alice and Bob produce different confirmation tokens" do
       password = "test"
       alice = Spake2.new(:alice, "alice", "bob")
@@ -400,6 +446,67 @@ defmodule Spake2Test do
 
       # Alice's token != Bob's token (prevents reflection attacks)
       assert alice.my_confirmation != bob.my_confirmation
+    end
+  end
+
+  describe "malformed peer messages" do
+    test "wrong-size message returns a decode error, not an invalid-state error" do
+      alice = Spake2.new(:alice)
+      {alice, _msg} = Spake2.generate_msg(alice, "password")
+
+      assert {:error, %Ed25519.DecodeError{}} = Spake2.process_msg(alice, <<0::248>>)
+      assert {:error, %Ed25519.DecodeError{}} = Spake2.process_msg(alice, <<0::264>>)
+      assert {:error, %Ed25519.DecodeError{}} = Spake2.process_msg(alice, <<>>)
+    end
+  end
+
+  describe "secret handling" do
+    test "password-derived material and ephemeral key are scrubbed after key derivation" do
+      password = "hunter2"
+      alice = Spake2.new(:alice)
+      bob = Spake2.new(:bob)
+
+      {alice, _alice_msg} = Spake2.generate_msg(alice, password)
+      {_bob, bob_msg} = Spake2.generate_msg(bob, password)
+
+      assert is_integer(alice.private_key)
+      assert is_binary(alice.password_hash)
+      assert is_integer(alice.pw_scalar)
+
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+
+      assert is_nil(alice.private_key)
+      assert is_nil(alice.password_hash)
+      assert is_nil(alice.pw_scalar)
+    end
+
+    test "inspect output does not leak key material" do
+      password = "hunter2"
+      alice = Spake2.new(:alice, "alice", "bob")
+      bob = Spake2.new(:bob, "bob", "alice")
+
+      {alice, alice_msg} = Spake2.generate_msg(alice, password)
+      {bob, bob_msg} = Spake2.generate_msg(bob, password)
+
+      # Secrets present in the struct before key derivation must not appear
+      inspected = inspect(alice, limit: :infinity, printable_limit: :infinity)
+      refute inspected =~ "private_key"
+      refute inspected =~ "password_hash"
+      refute inspected =~ "pw_scalar"
+      refute inspected =~ inspect(alice.private_key)
+
+      {:ok, alice} = Spake2.process_msg(alice, bob_msg)
+      {:ok, bob} = Spake2.process_msg(bob, alice_msg)
+
+      inspected = inspect(alice, limit: :infinity, printable_limit: :infinity)
+      refute inspected =~ "session_key"
+      refute inspected =~ Base.encode16(alice.session_key, case: :lower)
+      refute inspected =~ inspect(alice.session_key)
+      refute inspected =~ inspect(bob.my_confirmation)
+
+      # Public fields remain visible for debugging
+      assert inspected =~ ":alice"
+      assert inspected =~ ":key_derived"
     end
   end
 

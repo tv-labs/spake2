@@ -109,17 +109,27 @@ defmodule Spake2.Ed25519 do
     <<val::little-size(256)>>
   end
 
-  @doc "Decodes 32 bytes (compressed Ed25519) to a curve point."
-  @spec decode(binary()) :: {:ok, point()} | {:error, atom()}
+  @doc """
+  Decodes 32 bytes (compressed Ed25519) to a curve point.
+
+  Matches BoringSSL's `x25519_ge_frombytes_vartime`: the 255-bit y value is
+  interpreted as a field element (reduced mod p, so non-canonical encodings
+  are accepted, not rejected), and negating a zero x coordinate leaves it
+  zero. Decoded points always have fully reduced coordinates in `[0, p)`.
+  """
+  @spec decode(binary()) :: {:ok, point()} | {:error, Exception.t()}
   def decode(<<n::little-size(256)>>) do
     xc = n |> bsr(255)
-    y = n |> band(@low_255_bits)
-    x = xrecover(y)
+    y = n |> band(@low_255_bits) |> mod(@p)
+    x = mod(xrecover(y), @p)
 
     point =
-      case x &&& 1 do
-        ^xc -> {x, y}
-        _ -> {@p - x, y}
+      if (x &&& 1) == xc do
+        {x, y}
+      else
+        # fe_neg semantics: -0 = 0, so x = 0 with the sign bit set decodes
+        # to x = 0 rather than the unreduced coordinate p.
+        {mod(@p - x, @p), y}
       end
 
     if on_curve?(point), do: {:ok, point}, else: {:error, DecodeError.exception(:not_on_curve)}
